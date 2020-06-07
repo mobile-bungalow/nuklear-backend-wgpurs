@@ -1,11 +1,13 @@
-#![cfg_attr(feature = "cargo-clippy", allow(too_many_arguments))] // TODO later
-
 use nuklear::{Buffer as NkBuffer, Context, ConvertConfig, DrawVertexLayoutAttribute, DrawVertexLayoutElements, DrawVertexLayoutFormat, Handle, Size, Vec2};
+
 use std::{
-    mem::{size_of, size_of_val, forget},
+    fs::File,
+    io::prelude::*,
+    mem::{forget, size_of, size_of_val},
     slice::from_raw_parts,
     str::from_utf8,
 };
+
 use wgpu::*;
 
 pub const TEXTURE_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
@@ -29,7 +31,8 @@ type Ortho = [[f32; 4]; 4];
 impl WgpuTexture {
     pub fn new(device: &mut Device, queue: &mut Queue, drawer: &Drawer, image: &[u8], width: u32, height: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            size: Extent3d { width: width, height: height, depth: 1 },
+            label: None,
+            size: Extent3d { width, height, depth: 1 },
             array_layer_count: 1,
             dimension: TextureDimension::D2,
             format: TEXTURE_FORMAT,
@@ -37,6 +40,7 @@ impl WgpuTexture {
             sample_count: 1,
             usage: TextureUsage::SAMPLED | TextureUsage::COPY_DST,
         });
+
         let sampler = device.create_sampler(&SamplerDescriptor {
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
@@ -46,28 +50,25 @@ impl WgpuTexture {
             mipmap_filter: FilterMode::Linear,
             lod_min_clamp: -100.0,
             lod_max_clamp: 100.0,
-            compare_function: CompareFunction::Always,
+            compare: CompareFunction::Always,
         });
 
-        let bytes = image.len();
-        let buffer = device.create_buffer_mapped(bytes, BufferUsage::COPY_SRC);
-        let buffer = buffer.fill_from_slice(image);
+        let buffer = device.create_buffer_with_data(image, BufferUsage::COPY_SRC);
 
-        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { todo: 0 });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
-        let pixel_size = bytes as u32 / width / height;
         encoder.copy_buffer_to_texture(
             BufferCopyView {
                 buffer: &buffer,
                 offset: 0,
-                row_pitch: pixel_size * width,
-                image_height: height,
+                bytes_per_row: width,
+                rows_per_image: height,
             },
             TextureCopyView {
                 texture: &texture,
                 mip_level: 0,
                 array_layer: 0,
-                origin: Origin3d { x: 0.0, y: 0.0, z: 0.0 },
+                origin: Origin3d::ZERO,
             },
             Extent3d { width, height, depth: 1 },
         );
@@ -76,6 +77,7 @@ impl WgpuTexture {
 
         WgpuTexture {
             bind_group: device.create_bind_group(&BindGroupDescriptor {
+                label: None,
                 layout: &drawer.tla,
                 bindings: &[
                     wgpu::Binding {
@@ -112,16 +114,18 @@ impl Drawer {
     pub fn new(device: &mut Device, col: Color, texture_count: usize, vbo_size: usize, ebo_size: usize, command_buffer: NkBuffer) -> Drawer {
         let vs = include_bytes!("../shaders/vs.fx");
         let fs = include_bytes!("../shaders/ps.fx");
-
-        let vs = device.create_shader_module(compile_glsl(from_utf8(vs).unwrap(), glsl_to_spirv::ShaderType::Vertex).as_slice());
-        let fs = device.create_shader_module(compile_glsl(from_utf8(fs).unwrap(), glsl_to_spirv::ShaderType::Fragment).as_slice());
+        let vs = device.create_shader_module(compile_glsl("../shaders/vs.spirv", from_utf8(vs).unwrap(), glsl_to_spirv::ShaderType::Vertex).as_slice());
+        let fs = device.create_shader_module(compile_glsl("../shaders/ps.spirv", from_utf8(fs).unwrap(), glsl_to_spirv::ShaderType::Fragment).as_slice());
 
         let ubf = device.create_buffer(&BufferDescriptor {
+            label: None,
             size: size_of::<Ortho>() as u64,
             usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
         });
+
         let ubg = BindGroupLayoutDescriptor {
-            bindings: &[BindGroupLayoutBinding {
+            label: None,
+            bindings: &[BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStage::VERTEX,
                 ty: wgpu::BindingType::UniformBuffer { dynamic: false },
@@ -129,22 +133,25 @@ impl Drawer {
         };
 
         let tbg = BindGroupLayoutDescriptor {
+            label: None,
             bindings: &[
-                BindGroupLayoutBinding {
+                BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStage::FRAGMENT,
                     ty: wgpu::BindingType::SampledTexture {
                         multisampled: false,
                         dimension: wgpu::TextureViewDimension::D2,
+                        component_type: TextureComponentType::Float,
                     },
                 },
-                BindGroupLayoutBinding {
+                BindGroupLayoutEntry {
                     binding: 1,
                     visibility: ShaderStage::FRAGMENT,
-                    ty: BindingType::Sampler,
+                    ty: BindingType::Sampler { comparison: false },
                 },
             ],
         };
+
         let tla = device.create_bind_group_layout(&tbg);
         let ula = device.create_bind_group_layout(&ubg);
 
@@ -178,36 +185,21 @@ impl Drawer {
                     write_mask: ColorWrite::ALL,
                 }],
                 depth_stencil_state: None,
-                index_format: IndexFormat::Uint16,
-                vertex_buffers: &[VertexBufferDescriptor {
-                    stride: (size_of::<Vertex>()) as u64,
-                    step_mode: InputStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttributeDescriptor {
-                            format: VertexFormat::Float2,
-                            shader_location: 0,
-                            offset: 0,
-                        },
-                        wgpu::VertexAttributeDescriptor {
-                            format: VertexFormat::Float2,
-                            shader_location: 1,
-                            offset: 8,
-                        },
-                        wgpu::VertexAttributeDescriptor {
-                            format: VertexFormat::Uint,
-                            shader_location: 2,
-                            offset: 16,
-                        },
-                    ],
-                }],
+                vertex_state: VertexStateDescriptor {
+                    index_format: IndexFormat::Uint16,
+                    vertex_buffers: &[VertexBufferDescriptor {
+                        stride: (size_of::<Vertex>()) as u64,
+                        step_mode: InputStepMode::Vertex,
+                        attributes: &vertex_attr_array![ 0 => Float2, 1 => Float2, 2 => Uint ],
+                    }],
+                },
                 sample_count: 1,
                 sample_mask: !0,
                 alpha_to_coverage_enabled: false,
             }),
             tex: Vec::with_capacity(texture_count + 1),
-            vsz: vbo_size,
-            esz: ebo_size,
             ubg: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
                 layout: &ula,
                 bindings: &[Binding {
                     binding: 0,
@@ -217,14 +209,16 @@ impl Drawer {
                     },
                 }],
             }),
-            ubf: ubf,
             vle: DrawVertexLayoutElements::new(&[
                 (DrawVertexLayoutAttribute::Position, DrawVertexLayoutFormat::Float, 0),
                 (DrawVertexLayoutAttribute::TexCoord, DrawVertexLayoutFormat::Float, size_of::<f32>() as Size * 2),
                 (DrawVertexLayoutAttribute::Color, DrawVertexLayoutFormat::B8G8R8A8, size_of::<f32>() as Size * 4),
                 (DrawVertexLayoutAttribute::AttributeCount, DrawVertexLayoutFormat::Count, 0),
             ]),
-            tla: tla,
+            vsz: vbo_size,
+            esz: ebo_size,
+            ubf,
+            tla,
         }
     }
 
@@ -244,9 +238,20 @@ impl Drawer {
         cfg.set_vertex_layout(&self.vle);
         cfg.set_vertex_size(size_of::<Vertex>());
 
-        let mut vbf = device.create_buffer_mapped(self.vsz, BufferUsage::VERTEX | BufferUsage::COPY_SRC);
-        let mut ebf = device.create_buffer_mapped(self.esz, BufferUsage::INDEX | BufferUsage::COPY_SRC);
-        let ubf = device.create_buffer_mapped(ubf_size, BufferUsage::UNIFORM | BufferUsage::COPY_SRC);
+        let mut vbf = device.create_buffer_mapped(&BufferDescriptor {
+            label: None,
+            size: self.vsz as u64,
+            usage: BufferUsage::VERTEX | BufferUsage::COPY_SRC,
+        });
+
+        let mut ebf = device.create_buffer_mapped(&BufferDescriptor {
+            label: None,
+            size: self.esz as u64,
+            usage: BufferUsage::INDEX | BufferUsage::COPY_SRC,
+        });
+
+        let ubf = device.create_buffer_with_data(as_typed_slice(&ortho), BufferUsage::UNIFORM | BufferUsage::COPY_SRC);
+
         {
             let mut vbuf = NkBuffer::with_fixed(&mut vbf.data);
             let mut ebuf = NkBuffer::with_fixed(&mut ebf.data);
@@ -261,7 +266,6 @@ impl Drawer {
         }
         let vbf = vbf.finish();
         let ebf = ebf.finish();
-        let ubf = ubf.fill_from_slice(as_typed_slice(&ortho));
 
         encoder.copy_buffer_to_buffer(&ubf, 0, &self.ubf, 0, ubf_size as u64);
 
@@ -280,8 +284,8 @@ impl Drawer {
         });
         rpass.set_pipeline(&self.pso);
 
-        rpass.set_vertex_buffers(0, &[(&vbf, 0)]);
-        rpass.set_index_buffer(&ebf, 0);
+        rpass.set_vertex_buffer(0, &vbf, 0, 0);
+        rpass.set_index_buffer(&ebf, 0, 0);
 
         rpass.set_bind_group(0, &self.ubg, &[]);
 
@@ -320,12 +324,15 @@ impl Drawer {
 fn as_typed_slice<T>(data: &[T]) -> &[u8] {
     unsafe { from_raw_parts(data.as_ptr() as *const u8, data.len() * size_of::<T>()) }
 }
-fn compile_glsl(code: &str, ty: glsl_to_spirv::ShaderType) -> Vec<u32> {
-    use std::io::Read;
-
+fn compile_glsl(path: &str, code: &str, ty: glsl_to_spirv::ShaderType) -> Vec<u32> {
+    let mut f = File::create(path).expect("Could Not Create File");
     let mut output = glsl_to_spirv::compile(code, ty).unwrap();
+
     let mut spv = Vec::new();
     output.read_to_end(&mut spv).unwrap();
+
+    f.write_all(&spv).unwrap();
+
     let spv32: Vec<u32> = unsafe { Vec::from_raw_parts(spv.as_mut_ptr() as *mut _ as *mut u32, spv.len() / 4, spv.capacity() / 4) };
     forget(spv);
     spv32
