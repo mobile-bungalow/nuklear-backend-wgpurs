@@ -1,3 +1,4 @@
+#![cfg_attr(feature = "cargo-clippy", allow(too_many_arguments))] // TODO later
 use nuklear::{Buffer as NkBuffer, Context, ConvertConfig, DrawVertexLayoutAttribute, DrawVertexLayoutElements, DrawVertexLayoutFormat, Handle, Size, Vec2};
 
 use std::{
@@ -112,8 +113,8 @@ impl Drawer {
     pub fn new(device: &mut Device, col: Color, texture_count: usize, vbo_size: usize, ebo_size: usize, command_buffer: NkBuffer) -> Drawer {
         let vs = include_bytes!("../shaders/vs.fx");
         let fs = include_bytes!("../shaders/ps.fx");
-        let vs = device.create_shader_module(compile_glsl("../shaders/vs.spirv", from_utf8(vs).unwrap(), glsl_to_spirv::ShaderType::Vertex).as_slice());
-        let fs = device.create_shader_module(compile_glsl("../shaders/ps.spirv", from_utf8(fs).unwrap(), glsl_to_spirv::ShaderType::Fragment).as_slice());
+        let vs = device.create_shader_module(compile_glsl(from_utf8(vs).unwrap(), glsl_to_spirv::ShaderType::Vertex).as_slice());
+        let fs = device.create_shader_module(compile_glsl(from_utf8(fs).unwrap(), glsl_to_spirv::ShaderType::Fragment).as_slice());
 
         let ubf = device.create_buffer(&BufferDescriptor {
             label: None,
@@ -324,14 +325,10 @@ impl Drawer {
 fn as_typed_slice<T>(data: &[T]) -> &[u8] {
     unsafe { from_raw_parts(data.as_ptr() as *const u8, data.len() * size_of::<T>()) }
 }
-fn compile_glsl(_path: &str, code: &str, ty: glsl_to_spirv::ShaderType) -> Vec<u32> {
-    // let mut f = File::create(path).expect("Could Not Create File");
+fn compile_glsl(code: &str, ty: glsl_to_spirv::ShaderType) -> Vec<u32> {
     let mut output = glsl_to_spirv::compile(code, ty).unwrap();
-
     let mut spv = Vec::new();
     output.read_to_end(&mut spv).unwrap();
-
-    // f.write_all(&spv).unwrap();
 
     let spv32: Vec<u32> = unsafe { Vec::from_raw_parts(spv.as_mut_ptr() as *mut _ as *mut u32, spv.len() / 4, spv.capacity() / 4) };
     forget(spv);
