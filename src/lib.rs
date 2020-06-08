@@ -1,7 +1,6 @@
 use nuklear::{Buffer as NkBuffer, Context, ConvertConfig, DrawVertexLayoutAttribute, DrawVertexLayoutElements, DrawVertexLayoutFormat, Handle, Size, Vec2};
 
 use std::{
-    fs::File,
     io::prelude::*,
     mem::{forget, size_of, size_of_val},
     slice::from_raw_parts,
@@ -22,7 +21,6 @@ struct Vertex {
 struct WgpuTexture {
     texture: Texture,
     sampler: Sampler,
-
     pub bind_group: BindGroup,
 }
 
@@ -61,8 +59,8 @@ impl WgpuTexture {
             BufferCopyView {
                 buffer: &buffer,
                 offset: 0,
-                bytes_per_row: width,
-                rows_per_image: height,
+                bytes_per_row: width * 4,
+                rows_per_image: height * 4,
             },
             TextureCopyView {
                 texture: &texture,
@@ -141,7 +139,7 @@ impl Drawer {
                     ty: wgpu::BindingType::SampledTexture {
                         multisampled: false,
                         dimension: wgpu::TextureViewDimension::D2,
-                        component_type: TextureComponentType::Float,
+                        component_type: TextureComponentType::Uint,
                     },
                 },
                 BindGroupLayoutEntry {
@@ -238,6 +236,7 @@ impl Drawer {
         cfg.set_vertex_layout(&self.vle);
         cfg.set_vertex_size(size_of::<Vertex>());
 
+        //TODO: replace these with proper staging buffers.
         let mut vbf = device.create_buffer_mapped(&BufferDescriptor {
             label: None,
             size: self.vsz as u64,
@@ -304,7 +303,8 @@ impl Drawer {
 
             rpass.set_bind_group(1, &res.bind_group, &[]);
 
-            rpass.set_scissor_rect((cmd.clip_rect().x * scale.x) as u32, (cmd.clip_rect().y * scale.y) as u32, (cmd.clip_rect().w * scale.x) as u32, (cmd.clip_rect().h * scale.y) as u32);
+            let nuklear::Rect { x, y, w, h } = cmd.clip_rect();
+            rpass.set_scissor_rect((x * scale.x) as u32, (y * scale.y) as u32, (w * scale.x) as u32, (h * scale.y) as u32);
 
             rpass.draw_indexed(start..end, 0 as i32, 0..1);
 
@@ -324,14 +324,14 @@ impl Drawer {
 fn as_typed_slice<T>(data: &[T]) -> &[u8] {
     unsafe { from_raw_parts(data.as_ptr() as *const u8, data.len() * size_of::<T>()) }
 }
-fn compile_glsl(path: &str, code: &str, ty: glsl_to_spirv::ShaderType) -> Vec<u32> {
-    let mut f = File::create(path).expect("Could Not Create File");
+fn compile_glsl(_path: &str, code: &str, ty: glsl_to_spirv::ShaderType) -> Vec<u32> {
+    // let mut f = File::create(path).expect("Could Not Create File");
     let mut output = glsl_to_spirv::compile(code, ty).unwrap();
 
     let mut spv = Vec::new();
     output.read_to_end(&mut spv).unwrap();
 
-    f.write_all(&spv).unwrap();
+    // f.write_all(&spv).unwrap();
 
     let spv32: Vec<u32> = unsafe { Vec::from_raw_parts(spv.as_mut_ptr() as *mut _ as *mut u32, spv.len() / 4, spv.capacity() / 4) };
     forget(spv);
